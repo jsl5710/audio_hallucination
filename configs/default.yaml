@@ -1,0 +1,28 @@
+# Default configuration for audio hallucination detection
+
+model:
+  name: "openai/whisper-large-v3"
+  device: "cuda"
+
+detection:
+  # Confidence threshold below which a segment is flagged as a potential hallucination
+  confidence_threshold: 0.5
+  # Minimum duration (seconds) for a segment to be analyzed
+  min_segment_duration: 0.5
+  # Methods to use for hallucination detection
+  methods:
+    - "confidence_scoring"
+    - "repetition_detection"
+    - "silence_alignment"
+
+evaluation:
+  metrics:
+    - "wer"
+    - "hallucination_rate"
+    - "precision"
+    - "recall"
+    - "f1"
+
+data:
+  sample_rate: 16000
+  max_duration: 30.0

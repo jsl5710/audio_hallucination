@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Data and model artifacts
+*.pt
+*.pth
+*.bin
+*.onnx
+*.wav
+*.mp3
+*.flac
+data/raw/
+data/processed/
+models/checkpoints/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
