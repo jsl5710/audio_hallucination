@@ -16,7 +16,7 @@ Each task is evaluated using two prompting strategies: **direct** and **chain-of
 
 | Model | Notebook | Notes |
 |-------|----------|-------|
-| [Qwen2.5-Omni-3B](https://huggingface.co/Qwen/Qwen2.5-Omni-3B) | `Hallucination_audio_text_experiment.ipynb` | Primary model; uses `qwen_omni_utils` |
+| [Qwen2.5-Omni-3B](https://huggingface.co/Qwen/Qwen2.5-Omni-3B) | `Hallucination_qwen25omni_experiment.ipynb` | Primary model; uses `qwen_omni_utils` |
 | [Qwen2-Audio-7B-Instruct](https://huggingface.co/Qwen/Qwen2-Audio-7B-Instruct) | `Hallucination_qwen2audio_experiment.ipynb` | Audio loaded via `librosa` |
 | [Gemma 3n E4B](https://huggingface.co/google/gemma-3n-E4B-it) | `Hallucination_gemma3n_experiment.ipynb` | Requires `transformers>=4.53.0`, HF login |
 | [LFM2-Audio-1.5B](https://huggingface.co/LiquidAI/LFM2-Audio-1.5B) | `Hallucination_lfm2audio_experiment.ipynb` | Uses `liquid-audio` package; English only |
@@ -35,7 +35,7 @@ Each model has its own self-contained Colab notebook to avoid dependency conflic
 ```
 audio_hallucination/
 ├── notebooks/
-│   ├── Hallucination_audio_text_experiment.ipynb      # Qwen2.5-Omni (primary)
+│   ├── Hallucination_qwen25omni_experiment.ipynb       # Qwen2.5-Omni (primary)
 │   ├── Hallucination_qwen2audio_experiment.ipynb       # Qwen2-Audio
 │   ├── Hallucination_gemma3n_experiment.ipynb          # Gemma 3n
 │   ├── Hallucination_lfm2audio_experiment.ipynb        # LFM2-Audio
