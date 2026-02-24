@@ -317,7 +317,6 @@ if [ "$RUN_RESULTS" = true ]; then
 
     # Results analysis has minimal deps - use its own lightweight venv
     setup_venv "results" "${REQ_DIR}/results.txt"
-    local results_python="${VENVS_DIR}/results/bin/python"
 
     if "${VENVS_DIR}/results/bin/python" "${SCRIPT_DIR}/run_results_analysis.py" \
         --results-dir "${OUTPUT_DIR}" \
