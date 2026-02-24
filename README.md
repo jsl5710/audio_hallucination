@@ -43,6 +43,7 @@ audio_hallucination/
 │   └── Hallucination_audio_text_results.ipynb
 ├── scripts/                                             # Standalone GPU scripts
 │   ├── experiment_utils.py                              # Shared utilities
+│   ├── run_all_models.sh                                # Run all 5 models + results
 │   ├── run_qwen25omni.py                                # Qwen2.5-Omni-3B
 │   ├── run_qwen2audio.py                                # Qwen2-Audio-7B
 │   ├── run_gemma3n.py                                   # Gemma 3n E4B
@@ -55,20 +56,35 @@ audio_hallucination/
 └── docs/
 ```
 
-## Data
+## Data & Prior Results
 
-The data directory should contain one subfolder per language, each with a CSV file and the corresponding audio files:
+On Google Colab, everything lives in a single Drive folder:
 
 ```
-Audio_data/
-├── English/    # CSV + audio files
-├── Kazakh/     # CSV + audio files
-└── Russian/    # CSV + audio files
+ICASSP_Hallucinaton/               (Google Drive)
+├── Audio_data/                    # Input: CSVs + audio files per language
+│   ├── English/
+│   ├── Kazakh/
+│   └── Russian/
+├── checkpoints/                   # In-progress checkpoint files
+├── hallucination_results/         # Completed results from prior runs
+└── tables/                        # Generated LaTeX tables & metrics
 ```
 
-Each CSV must contain these columns: `filename`, `text`, `hallucination`, `hallucination_type`, `hallucination_level`.
+For running on a **GPU server**, you copy these 4 folders into the repo root so the scripts can find them and **resume from prior Colab runs**:
 
-For Colab, the expected path is `/content/drive/MyDrive/ICASSP_Hallucinaton/Audio_data/`. For server scripts, pass the path via `--data-dir`.
+```
+audio_hallucination/               (git clone)
+├── Audio_data/                    <-- copy from ICASSP_Hallucinaton/
+├── checkpoints/                   <-- copy from ICASSP_Hallucinaton/
+├── hallucination_results/         <-- copy from ICASSP_Hallucinaton/
+├── tables/                        <-- copy from ICASSP_Hallucinaton/
+├── scripts/
+├── notebooks/
+└── ...
+```
+
+Each language CSV must contain columns: `filename`, `text`, `hallucination`, `hallucination_type`, `hallucination_level`.
 
 ## Running Experiments
 
@@ -82,38 +98,63 @@ For Colab, the expected path is `/content/drive/MyDrive/ICASSP_Hallucinaton/Audi
 
 All model scripts are in `scripts/` and share a common utilities module (`experiment_utils.py`). Each script is self-contained with its own model setup and CLI arguments.
 
-#### Installation
-
-Install the base dependencies first (each model may need extras -- see per-model notes):
+#### Step 1: Clone and set up data
 
 ```bash
-pip install torch torchaudio transformers accelerate soundfile pandas tqdm librosa
-```
-
-#### Quick Start
-
-```bash
-# Run from the project root directory
+# Clone the repo
+git clone https://github.com/jsl5710/audio_hallucination.git
 cd audio_hallucination
 
+# Copy the ICASSP_Hallucinaton folder contents into the repo root
+# This includes Audio_data + prior results/checkpoints for smart resume
+cp -r /path/to/ICASSP_Hallucinaton/Audio_data ./
+cp -r /path/to/ICASSP_Hallucinaton/checkpoints ./
+cp -r /path/to/ICASSP_Hallucinaton/hallucination_results ./
+cp -r /path/to/ICASSP_Hallucinaton/tables ./
+```
+
+#### Step 2: Install dependencies
+
+```bash
+pip install torch torchaudio transformers accelerate soundfile pandas tqdm librosa scikit-learn
+```
+
+#### Step 3a: Run all models at once (recommended)
+
+```bash
+# Set the HuggingFace token (needed for Gemma 3n)
+export HF_TOKEN="your_huggingface_token"
+
+# Run all 5 models sequentially, then generate results
+chmod +x scripts/run_all_models.sh
+./scripts/run_all_models.sh
+```
+
+The script auto-detects `Audio_data/`, `checkpoints/`, and `hallucination_results/` in the repo root. It will print what prior results it found and resume from where each model left off.
+
+To skip specific models, edit the `RUN_*` flags at the top of `run_all_models.sh`.
+
+#### Step 3b: Run individual models
+
+```bash
 # Qwen2.5-Omni-3B (audio experiment, batch size 4)
-python scripts/run_qwen25omni.py --data-dir /path/to/Audio_data --batch-size 4
+python scripts/run_qwen25omni.py --data-dir ./Audio_data --batch-size 4
 
 # Qwen2-Audio-7B-Instruct (audio + text experiments)
-python scripts/run_qwen2audio.py --data-dir /path/to/Audio_data --batch-size 8 --experiment-types audio text
+python scripts/run_qwen2audio.py --data-dir ./Audio_data --batch-size 8 --experiment-types audio text
 
-# Gemma 3n E4B (set your HF token via env var or --hf-token)
+# Gemma 3n E4B (needs HF token)
 export HF_TOKEN="your_huggingface_token"
-python scripts/run_gemma3n.py --data-dir /path/to/Audio_data --batch-size 4
+python scripts/run_gemma3n.py --data-dir ./Audio_data --batch-size 4
 
 # LFM2-Audio-1.5B (English only)
 pip install liquid-audio
-python scripts/run_lfm2audio.py --data-dir /path/to/Audio_data --batch-size 4 --languages english
+python scripts/run_lfm2audio.py --data-dir ./Audio_data --batch-size 4 --languages english
 
 # Step-Audio-2-mini (requires cloned repo + specific transformers version)
 pip install transformers==4.49.0 onnxruntime s3tokenizer diffusers hyperpyyaml
-git clone https://github.com/stepfun-ai/Step-Audio2.git /path/to/Step-Audio2
-python scripts/run_stepaudio2.py --data-dir /path/to/Audio_data --step-audio-repo /path/to/Step-Audio2
+git clone https://github.com/stepfun-ai/Step-Audio2.git ./Step-Audio2
+python scripts/run_stepaudio2.py --data-dir ./Audio_data --step-audio-repo ./Step-Audio2
 
 # Generate results tables and metrics (after experiments finish)
 python scripts/run_results_analysis.py --results-dir ./hallucination_results --output-dir ./tables

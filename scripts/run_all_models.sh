@@ -3,8 +3,14 @@
 # Run All Hallucination Classification Experiments
 # =============================================================================
 #
-# This script runs all 5 model experiments and then generates results tables.
-# Edit the CONFIGURATION section below before running.
+# Setup:
+#   1. git clone the repo
+#   2. Copy the ICASSP_Hallucinaton folder contents into the repo root:
+#        cp -r /path/to/ICASSP_Hallucinaton/Audio_data ./
+#        cp -r /path/to/ICASSP_Hallucinaton/checkpoints ./
+#        cp -r /path/to/ICASSP_Hallucinaton/hallucination_results ./
+#        cp -r /path/to/ICASSP_Hallucinaton/tables ./
+#   3. The scripts will auto-detect prior results and resume from checkpoints.
 #
 # Usage:
 #   chmod +x scripts/run_all_models.sh
@@ -17,8 +23,11 @@ set -e  # Exit on error
 # ========================== CONFIGURATION ==========================
 # Edit these variables to match your server setup
 
-# Path to the Audio_data directory (REQUIRED - change this)
-DATA_DIR="/path/to/Audio_data"
+# Project root (auto-detected: parent of scripts/)
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# Path to Audio_data directory (default: ./Audio_data in the repo root)
+DATA_DIR="${PROJECT_ROOT}/Audio_data"
 
 # Batch size for processing (higher = fewer checkpoints, faster I/O)
 BATCH_SIZE=4
@@ -29,17 +38,18 @@ EXPERIMENT_TYPES="audio"
 # Languages to process: "english kazakh russian" (space-separated)
 LANGUAGES="english kazakh russian"
 
-# Output directories
-OUTPUT_DIR="hallucination_results"
-CHECKPOINT_DIR="checkpoints"
-TABLES_DIR="tables"
+# Output directories (default: inside repo root, matching Colab layout)
+OUTPUT_DIR="${PROJECT_ROOT}/hallucination_results"
+CHECKPOINT_DIR="${PROJECT_ROOT}/checkpoints"
+TABLES_DIR="${PROJECT_ROOT}/tables"
 
 # HuggingFace token for Gemma 3n (REQUIRED for Gemma)
+# Set via: export HF_TOKEN="hf_your_token_here" before running this script
 HF_TOKEN="${HF_TOKEN:-your_huggingface_token_here}"
 
 # Path to cloned Step-Audio2 repo (REQUIRED for Step-Audio-2)
-# Will auto-clone if not found
-STEP_AUDIO_REPO="./Step-Audio2"
+# Will auto-clone into repo root if not found
+STEP_AUDIO_REPO="${PROJECT_ROOT}/Step-Audio2"
 
 # Set to "true" to ignore existing checkpoints and start fresh
 FORCE_RESTART="false"
@@ -50,7 +60,7 @@ FLASH_ATTN="false"
 # Set to "true" to only process hallucinated samples
 FILTER_HALLUCINATED_ONLY="false"
 
-# Which models to run (comment out any you want to skip)
+# Which models to run (set to false to skip)
 RUN_QWEN25OMNI=true
 RUN_QWEN2AUDIO=true
 RUN_GEMMA3N=true
@@ -104,7 +114,16 @@ echo ""
 # Check data directory
 if [ ! -d "$DATA_DIR" ]; then
     log_error "Data directory not found: ${DATA_DIR}"
-    log_error "Edit DATA_DIR in this script to point to your Audio_data/ directory."
+    log_error ""
+    log_error "Expected layout after setup:"
+    log_error "  audio_hallucination/           (this repo)"
+    log_error "  ├── Audio_data/                (copy from ICASSP_Hallucinaton/)"
+    log_error "  │   ├── English/"
+    log_error "  │   ├── Kazakh/"
+    log_error "  │   └── Russian/"
+    log_error "  ├── checkpoints/               (copy from ICASSP_Hallucinaton/ for resume)"
+    log_error "  ├── hallucination_results/     (copy from ICASSP_Hallucinaton/ for resume)"
+    log_error "  └── scripts/"
     exit 1
 fi
 
@@ -121,17 +140,47 @@ for lang_folder in English Kazakh Russian; do
     fi
 done
 
+# Check for prior results (for smart resume)
+if [ -d "$OUTPUT_DIR" ]; then
+    model_count=$(find "$OUTPUT_DIR" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l)
+    if [ "$model_count" -gt 0 ]; then
+        log_ok "Prior results found (${model_count} model(s)) - will resume from checkpoints"
+        for model_dir in "$OUTPUT_DIR"/*/; do
+            model_name=$(basename "$model_dir")
+            for exp_dir in "$model_dir"*/; do
+                [ -d "$exp_dir" ] || continue
+                exp_type=$(basename "$exp_dir")
+                result_count=$(find "$exp_dir" -name "*_results.csv" 2>/dev/null | wc -l)
+                if [ "$result_count" -gt 0 ]; then
+                    log_info "  ${model_name}/${exp_type}: ${result_count} language result(s)"
+                fi
+            done
+        done
+    fi
+else
+    log_info "No prior results found - starting fresh"
+fi
+
+if [ -d "$CHECKPOINT_DIR" ]; then
+    ckpt_count=$(find "$CHECKPOINT_DIR" -name "*_progress.json" 2>/dev/null | wc -l)
+    if [ "$ckpt_count" -gt 0 ]; then
+        log_ok "Checkpoints found (${ckpt_count} in-progress) - will resume incomplete runs"
+    fi
+fi
+
 echo ""
-log_info "Batch size: ${BATCH_SIZE}"
+log_info "Project root:     ${PROJECT_ROOT}"
+log_info "Batch size:       ${BATCH_SIZE}"
 log_info "Experiment types: ${EXPERIMENT_TYPES}"
-log_info "Languages: ${LANGUAGES}"
-log_info "Output dir: ${OUTPUT_DIR}"
-log_info "Force restart: ${FORCE_RESTART}"
-log_info "Flash Attention: ${FLASH_ATTN}"
+log_info "Languages:        ${LANGUAGES}"
+log_info "Output dir:       ${OUTPUT_DIR}"
+log_info "Checkpoint dir:   ${CHECKPOINT_DIR}"
+log_info "Force restart:    ${FORCE_RESTART}"
+log_info "Flash Attention:  ${FLASH_ATTN}"
 echo ""
 
 # Create output directories
-mkdir -p "${OUTPUT_DIR}" "${CHECKPOINT_DIR}"
+mkdir -p "${OUTPUT_DIR}" "${CHECKPOINT_DIR}" "${TABLES_DIR}"
 
 # Track results
 SUCCEEDED=()

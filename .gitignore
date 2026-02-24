@@ -33,6 +33,13 @@ data/raw/
 data/processed/
 models/checkpoints/
 
+# Experiment data & results (copied from ICASSP_Hallucinaton/ for server runs)
+Audio_data/
+checkpoints/
+hallucination_results/
+tables/
+Step-Audio2/
+
 # OS
 .DS_Store
 Thumbs.db
