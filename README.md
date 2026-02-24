@@ -113,13 +113,9 @@ cp -r /path/to/ICASSP_Hallucinaton/hallucination_results ./
 cp -r /path/to/ICASSP_Hallucinaton/tables ./
 ```
 
-#### Step 2: Install dependencies
+#### Step 2: Run all models at once (recommended)
 
-```bash
-pip install torch torchaudio transformers accelerate soundfile pandas tqdm librosa scikit-learn
-```
-
-#### Step 3a: Run all models at once (recommended)
+The script **automatically creates a separate virtual environment per model** (under `venvs/`) so that conflicting dependencies (e.g. Step-Audio-2 needs `transformers==4.49.0`, Gemma needs `>=4.53.0`) don't interfere. On first run each venv is created and packages are installed; on subsequent runs the existing venvs are reused instantly.
 
 ```bash
 # Set the HuggingFace token (needed for Gemma 3n)
@@ -130,34 +126,75 @@ chmod +x scripts/run_all_models.sh
 ./scripts/run_all_models.sh
 ```
 
-The script auto-detects `Audio_data/`, `checkpoints/`, and `hallucination_results/` in the repo root. It will print what prior results it found and resume from where each model left off.
+The script will:
+- Auto-detect `Audio_data/`, `checkpoints/`, and `hallucination_results/` in the repo root
+- Print what prior results it found and resume from where each model left off
+- Create `venvs/qwen25omni/`, `venvs/qwen2audio/`, etc. with the right dependencies
+- Run each model, then generate LaTeX tables and metrics
 
 To skip specific models, edit the `RUN_*` flags at the top of `run_all_models.sh`.
 
-#### Step 3b: Run individual models
+#### Step 2b: Run individual models manually
+
+If you prefer manual control, create a venv yourself and install from the per-model requirements file:
 
 ```bash
-# Qwen2.5-Omni-3B (audio experiment, batch size 4)
+# Example: Qwen2.5-Omni-3B
+python3 -m venv venvs/qwen25omni
+source venvs/qwen25omni/bin/activate
+pip install -r requirements/qwen25omni.txt
 python scripts/run_qwen25omni.py --data-dir ./Audio_data --batch-size 4
+deactivate
 
-# Qwen2-Audio-7B-Instruct (audio + text experiments)
+# Example: Qwen2-Audio-7B-Instruct
+python3 -m venv venvs/qwen2audio
+source venvs/qwen2audio/bin/activate
+pip install -r requirements/qwen2audio.txt
 python scripts/run_qwen2audio.py --data-dir ./Audio_data --batch-size 8 --experiment-types audio text
+deactivate
 
-# Gemma 3n E4B (needs HF token)
+# Example: Gemma 3n E4B
+python3 -m venv venvs/gemma3n
+source venvs/gemma3n/bin/activate
+pip install -r requirements/gemma3n.txt
 export HF_TOKEN="your_huggingface_token"
 python scripts/run_gemma3n.py --data-dir ./Audio_data --batch-size 4
+deactivate
 
-# LFM2-Audio-1.5B (English only)
-pip install liquid-audio
+# Example: LFM2-Audio-1.5B (English only)
+python3 -m venv venvs/lfm2audio
+source venvs/lfm2audio/bin/activate
+pip install -r requirements/lfm2audio.txt
 python scripts/run_lfm2audio.py --data-dir ./Audio_data --batch-size 4 --languages english
+deactivate
 
-# Step-Audio-2-mini (requires cloned repo + specific transformers version)
-pip install transformers==4.49.0 onnxruntime s3tokenizer diffusers hyperpyyaml
+# Example: Step-Audio-2-mini
 git clone https://github.com/stepfun-ai/Step-Audio2.git ./Step-Audio2
+python3 -m venv venvs/stepaudio2
+source venvs/stepaudio2/bin/activate
+pip install -r requirements/stepaudio2.txt
 python scripts/run_stepaudio2.py --data-dir ./Audio_data --step-audio-repo ./Step-Audio2
+deactivate
 
-# Generate results tables and metrics (after experiments finish)
+# Results analysis (lightweight, no GPU needed)
+python3 -m venv venvs/results
+source venvs/results/bin/activate
+pip install -r requirements/results.txt
 python scripts/run_results_analysis.py --results-dir ./hallucination_results --output-dir ./tables
+deactivate
+```
+
+#### Requirements files
+
+```
+requirements/
+├── base.txt          # Shared: torch, torchaudio, accelerate, pandas, tqdm, etc.
+├── qwen25omni.txt    # + transformers (Qwen2.5-Omni preview branch), qwen-omni-utils
+├── qwen2audio.txt    # + transformers, librosa
+├── gemma3n.txt       # + transformers>=4.53.0, librosa
+├── lfm2audio.txt     # + liquid-audio
+├── stepaudio2.txt    # + transformers==4.49.0, onnxruntime, s3tokenizer, diffusers, hyperpyyaml
+└── results.txt       # pandas, numpy, scikit-learn (no GPU deps)
 ```
 
 #### CLI Arguments (all model scripts)

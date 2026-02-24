@@ -1,0 +1,4 @@
+# Qwen2-Audio-7B-Instruct
+-r base.txt
+transformers
+librosa

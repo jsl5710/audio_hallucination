@@ -3,6 +3,9 @@
 # Run All Hallucination Classification Experiments
 # =============================================================================
 #
+# Each model runs in its own virtual environment to avoid dependency conflicts
+# (e.g. Step-Audio-2 needs transformers==4.49.0 while Gemma needs >=4.53.0).
+#
 # Setup:
 #   1. git clone the repo
 #   2. Copy the ICASSP_Hallucinaton folder contents into the repo root:
@@ -10,18 +13,18 @@
 #        cp -r /path/to/ICASSP_Hallucinaton/checkpoints ./
 #        cp -r /path/to/ICASSP_Hallucinaton/hallucination_results ./
 #        cp -r /path/to/ICASSP_Hallucinaton/tables ./
-#   3. The scripts will auto-detect prior results and resume from checkpoints.
+#   3. Set HF token: export HF_TOKEN="hf_your_token_here"
+#   4. Run: ./scripts/run_all_models.sh
 #
-# Usage:
-#   chmod +x scripts/run_all_models.sh
-#   ./scripts/run_all_models.sh
+# The script creates venvs/ with a separate environment per model.
+# On first run this takes a while (pip install). On subsequent runs the
+# existing venvs are reused instantly.
 #
 # =============================================================================
 
 set -e  # Exit on error
 
 # ========================== CONFIGURATION ==========================
-# Edit these variables to match your server setup
 
 # Project root (auto-detected: parent of scripts/)
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -42,6 +45,9 @@ LANGUAGES="english kazakh russian"
 OUTPUT_DIR="${PROJECT_ROOT}/hallucination_results"
 CHECKPOINT_DIR="${PROJECT_ROOT}/checkpoints"
 TABLES_DIR="${PROJECT_ROOT}/tables"
+
+# Virtual environments directory
+VENVS_DIR="${PROJECT_ROOT}/venvs"
 
 # HuggingFace token for Gemma 3n (REQUIRED for Gemma)
 # Set via: export HF_TOKEN="hf_your_token_here" before running this script
@@ -84,6 +90,7 @@ log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 
 # Get the directory where this script lives
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REQ_DIR="${PROJECT_ROOT}/requirements"
 
 # Build common CLI arguments
 COMMON_ARGS="--data-dir ${DATA_DIR} --batch-size ${BATCH_SIZE} --experiment-types ${EXPERIMENT_TYPES} --languages ${LANGUAGES} --output-dir ${OUTPUT_DIR} --checkpoint-dir ${CHECKPOINT_DIR}"
@@ -102,6 +109,27 @@ fi
 
 # Always skip interactive validation for automated runs
 COMMON_ARGS="${COMMON_ARGS} --no-validate"
+
+# ========================== VENV HELPERS ==========================
+
+setup_venv() {
+    # Creates a virtual environment and installs requirements if needed.
+    # Usage: setup_venv <venv_name> <requirements_file>
+    local venv_name="$1"
+    local req_file="$2"
+    local venv_path="${VENVS_DIR}/${venv_name}"
+
+    if [ ! -d "$venv_path" ]; then
+        log_info "Creating virtual environment: ${venv_name}"
+        python3 -m venv "$venv_path"
+        log_info "Installing dependencies from ${req_file}..."
+        "${venv_path}/bin/pip" install --upgrade pip -q
+        "${venv_path}/bin/pip" install -r "$req_file"
+        log_ok "Environment ${venv_name} ready"
+    else
+        log_ok "Reusing existing environment: ${venv_name}"
+    fi
+}
 
 # ========================== VALIDATION ==========================
 
@@ -175,12 +203,13 @@ log_info "Experiment types: ${EXPERIMENT_TYPES}"
 log_info "Languages:        ${LANGUAGES}"
 log_info "Output dir:       ${OUTPUT_DIR}"
 log_info "Checkpoint dir:   ${CHECKPOINT_DIR}"
+log_info "Venvs dir:        ${VENVS_DIR}"
 log_info "Force restart:    ${FORCE_RESTART}"
 log_info "Flash Attention:  ${FLASH_ATTN}"
 echo ""
 
 # Create output directories
-mkdir -p "${OUTPUT_DIR}" "${CHECKPOINT_DIR}" "${TABLES_DIR}"
+mkdir -p "${OUTPUT_DIR}" "${CHECKPOINT_DIR}" "${TABLES_DIR}" "${VENVS_DIR}"
 
 # Track results
 SUCCEEDED=()
@@ -189,16 +218,26 @@ SKIPPED=()
 
 run_model() {
     local name="$1"
-    local cmd="$2"
+    local venv_name="$2"
+    local req_file="$3"
+    local cmd="$4"
 
     echo ""
     echo "============================================================"
     log_info "Starting: ${name}"
     echo "============================================================"
-    echo "Command: ${cmd}"
+
+    # Set up venv and install deps
+    setup_venv "$venv_name" "$req_file"
+
+    # Run the script using the venv's Python
+    local venv_python="${VENVS_DIR}/${venv_name}/bin/python"
+    local full_cmd="${venv_python} ${cmd}"
+
+    echo "Command: ${full_cmd}"
     echo ""
 
-    if eval "$cmd"; then
+    if eval "$full_cmd"; then
         log_ok "${name} completed successfully"
         SUCCEEDED+=("$name")
     else
@@ -211,7 +250,9 @@ run_model() {
 
 if [ "$RUN_QWEN25OMNI" = true ]; then
     run_model "Qwen2.5-Omni-3B" \
-        "python ${SCRIPT_DIR}/run_qwen25omni.py ${COMMON_ARGS}"
+        "qwen25omni" \
+        "${REQ_DIR}/qwen25omni.txt" \
+        "${SCRIPT_DIR}/run_qwen25omni.py ${COMMON_ARGS}"
 else
     SKIPPED+=("Qwen2.5-Omni-3B")
 fi
@@ -220,7 +261,9 @@ fi
 
 if [ "$RUN_QWEN2AUDIO" = true ]; then
     run_model "Qwen2-Audio-7B-Instruct" \
-        "python ${SCRIPT_DIR}/run_qwen2audio.py ${COMMON_ARGS}"
+        "qwen2audio" \
+        "${REQ_DIR}/qwen2audio.txt" \
+        "${SCRIPT_DIR}/run_qwen2audio.py ${COMMON_ARGS}"
 else
     SKIPPED+=("Qwen2-Audio-7B-Instruct")
 fi
@@ -229,7 +272,9 @@ fi
 
 if [ "$RUN_GEMMA3N" = true ]; then
     run_model "Gemma-3n-E4B" \
-        "HF_TOKEN=${HF_TOKEN} python ${SCRIPT_DIR}/run_gemma3n.py ${COMMON_ARGS} --hf-token ${HF_TOKEN}"
+        "gemma3n" \
+        "${REQ_DIR}/gemma3n.txt" \
+        "${SCRIPT_DIR}/run_gemma3n.py ${COMMON_ARGS} --hf-token ${HF_TOKEN}"
 else
     SKIPPED+=("Gemma-3n-E4B")
 fi
@@ -238,7 +283,9 @@ fi
 
 if [ "$RUN_LFM2AUDIO" = true ]; then
     run_model "LFM2-Audio-1.5B" \
-        "python ${SCRIPT_DIR}/run_lfm2audio.py ${COMMON_ARGS}"
+        "lfm2audio" \
+        "${REQ_DIR}/lfm2audio.txt" \
+        "${SCRIPT_DIR}/run_lfm2audio.py ${COMMON_ARGS}"
 else
     SKIPPED+=("LFM2-Audio-1.5B")
 fi
@@ -253,7 +300,9 @@ if [ "$RUN_STEPAUDIO2" = true ]; then
     fi
 
     run_model "Step-Audio-2-mini" \
-        "python ${SCRIPT_DIR}/run_stepaudio2.py ${COMMON_ARGS} --step-audio-repo ${STEP_AUDIO_REPO}"
+        "stepaudio2" \
+        "${REQ_DIR}/stepaudio2.txt" \
+        "${SCRIPT_DIR}/run_stepaudio2.py ${COMMON_ARGS} --step-audio-repo ${STEP_AUDIO_REPO}"
 else
     SKIPPED+=("Step-Audio-2-mini")
 fi
@@ -266,7 +315,11 @@ if [ "$RUN_RESULTS" = true ]; then
     log_info "Generating results tables and metrics"
     echo "============================================================"
 
-    if python "${SCRIPT_DIR}/run_results_analysis.py" \
+    # Results analysis has minimal deps - use its own lightweight venv
+    setup_venv "results" "${REQ_DIR}/results.txt"
+    local results_python="${VENVS_DIR}/results/bin/python"
+
+    if "${VENVS_DIR}/results/bin/python" "${SCRIPT_DIR}/run_results_analysis.py" \
         --results-dir "${OUTPUT_DIR}" \
         --output-dir "${TABLES_DIR}"; then
         log_ok "Results analysis completed"
@@ -305,6 +358,7 @@ fi
 echo ""
 log_info "Results directory: ${OUTPUT_DIR}/"
 log_info "Tables directory:  ${TABLES_DIR}/"
+log_info "Venvs directory:   ${VENVS_DIR}/"
 echo ""
 
 # Exit with error if any model failed

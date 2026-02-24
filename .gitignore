@@ -39,6 +39,7 @@ checkpoints/
 hallucination_results/
 tables/
 Step-Audio2/
+venvs/
 
 # OS
 .DS_Store

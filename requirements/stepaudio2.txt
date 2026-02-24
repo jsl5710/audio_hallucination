@@ -1,0 +1,10 @@
+# Step-Audio-2-mini
+# Requires transformers==4.49.0 (will NOT work with newer versions)
+# Also requires cloning: git clone https://github.com/stepfun-ai/Step-Audio2.git
+-r base.txt
+transformers==4.49.0
+librosa
+onnxruntime
+s3tokenizer
+diffusers
+hyperpyyaml
