@@ -32,6 +32,22 @@ EXPERIMENT_TYPES = ['audio', 'text']
 TASKS = ['binary', 'type', 'degree']
 APPROACHES = ['direct', 'cot']
 
+# Ground-truth column and valid classes per task (used for stratified sampling)
+TASK_CLASSES = {
+    'binary': {
+        'column': 'hallucination',
+        'classes': ['yes', 'no'],
+    },
+    'type': {
+        'column': 'hallucination_type',
+        'classes': ['factual_contradiction', 'factual_fabrication', 'contextual_inconsistency'],
+    },
+    'degree': {
+        'column': 'hallucination_level',
+        'classes': ['mild', 'moderate', 'severe'],
+    },
+}
+
 # Prompt structure version (increment when prompt structure changes)
 PROMPT_VERSION = 2  # v2 = separated single-task prompts
 
@@ -183,6 +199,11 @@ def parse_common_args(description: str) -> argparse.ArgumentParser:
                         help='Only process hallucinated samples')
     parser.add_argument('--no-validate', action='store_true',
                         help='Skip smart resume validation')
+    parser.add_argument('--samples-per-class', type=int, default=None,
+                        help='Number of samples per class for stratified sampling. '
+                             'Each task uses its own ground-truth column to define classes. '
+                             'If a class has fewer samples than requested, all available are used. '
+                             'When omitted, all samples are processed (original behavior).')
     return parser
 
 
@@ -443,23 +464,33 @@ class SmartCheckpointManager:
             matched = 0
             unmatched = 0
 
+            partial = 0
             for _, existing_row in existing_df.iterrows():
                 existing_key = self._create_sample_key(existing_row)
                 if existing_key in current_mapping:
                     current_idx = current_mapping[existing_key]
                     pred_columns = [c for c in existing_df.columns if c.startswith('pred_')]
+                    # Always copy any existing predictions (supports partial results
+                    # from stratified sampling where not all tasks are filled)
+                    has_any = False
+                    for col in pred_columns:
+                        if col in existing_df.columns:
+                            val = existing_row[col]
+                            if not pd.isna(val) and str(val).strip() not in ('', 'nan'):
+                                results_df.loc[current_idx, col] = val
+                                has_any = True
                     if self._check_sample_processed(existing_row, pred_columns):
-                        for col in pred_columns:
-                            if col in existing_df.columns:
-                                results_df.loc[current_idx, col] = existing_row[col]
                         processed_indices.add(current_idx)
                         matched += 1
+                    elif has_any:
+                        partial += 1
                     else:
                         unmatched += 1
                 else:
                     unmatched += 1
 
-            print(f"Matched {matched} processed samples, {unmatched} unmatched")
+            print(f"Matched {matched} fully processed, {partial} partially processed, "
+                  f"{unmatched} unmatched")
 
             updated_mapping = {}
             for idx in processed_indices:
@@ -567,6 +598,60 @@ class SmartCheckpointManager:
         }
 
 
+# ========================== STRATIFIED SAMPLING ==========================
+
+def stratified_sample_indices(df: pd.DataFrame, task: str,
+                              samples_per_class: int) -> List[int]:
+    """Select indices via stratified sampling for a given task.
+
+    For each valid class of the task, sorts the class's rows by filename
+    (for deterministic, incremental selection) and takes the first N.
+    If a class has fewer than N rows, all are taken and a warning is printed.
+
+    Returns a sorted list of DataFrame integer indices.
+    """
+    task_info = TASK_CLASSES[task]
+    column = task_info['column']
+    valid_classes = task_info['classes']
+
+    selected_indices: List[int] = []
+    for cls in valid_classes:
+        # Select rows belonging to this class (case-insensitive)
+        mask = df[column].str.lower().str.strip() == cls.lower()
+        class_df = df[mask].sort_values('filename')
+
+        available = len(class_df)
+        take = min(samples_per_class, available)
+        if available < samples_per_class:
+            print(f"  Warning: {task}/{cls} has only {available} samples "
+                  f"(requested {samples_per_class})")
+
+        # Take first N indices (deterministic — increasing N keeps prior selection)
+        selected_indices.extend(class_df.index[:take].tolist())
+
+    selected_indices.sort()
+    return selected_indices
+
+
+def check_task_completed(results_df: pd.DataFrame, indices: List[int],
+                         task: str) -> Set[int]:
+    """Return the subset of indices where both approaches are filled for a task."""
+    done = set()
+    cols = [f'pred_{approach}_{task}' for approach in APPROACHES]
+    for idx in indices:
+        if all(_value_is_filled(results_df.loc[idx, c]) for c in cols):
+            done.add(idx)
+    return done
+
+
+def _value_is_filled(value) -> bool:
+    """Check if a prediction cell has a real value."""
+    if pd.isna(value):
+        return False
+    s = str(value).strip()
+    return s != '' and s.lower() != 'nan'
+
+
 # ========================== EXPERIMENT RUNNER ==========================
 
 def _prepare_input(row: pd.Series, experiment_type: str,
@@ -592,11 +677,20 @@ def run_experiment(classifier: BaseClassifier, model_name: str,
                    batch_size: int = 1, base_data_dir: str = '',
                    output_dir: str = 'hallucination_results',
                    checkpoint_dir: str = 'checkpoints',
-                   force_restart: bool = False):
-    """Run classification experiment with smart checkpointing and batch support."""
+                   force_restart: bool = False,
+                   samples_per_class: Optional[int] = None):
+    """Run classification experiment with smart checkpointing and batch support.
+
+    When samples_per_class is set, uses stratified sampling: each task gets its
+    own subset of N samples per ground-truth class. The loop becomes task-first
+    so only the needed task is run on each subset.  When None, all samples are
+    processed for all tasks (original behaviour).
+    """
 
     print(f"\nStarting {experiment_type} experiment with {model_name}")
     print(f"Prompt version: v{PROMPT_VERSION} | Batch size: {batch_size}")
+    if samples_per_class is not None:
+        print(f"Stratified sampling: {samples_per_class} samples per class per task")
     print(f"Tasks: {TASKS} x Approaches: {APPROACHES} = {len(TASKS) * len(APPROACHES)} calls per sample")
     print("=" * 60)
 
@@ -622,21 +716,125 @@ def run_experiment(classifier: BaseClassifier, model_name: str,
 
         print(f"Resuming: {len(processed_indices)}/{len(df)} already processed")
 
-        if len(processed_indices) == len(df):
-            print(f"All samples for {language} already processed!")
+        if samples_per_class is not None:
+            _run_stratified(classifier, df, results_df, processed_indices,
+                            ckpt_mgr, experiment_type, base_data_dir,
+                            batch_size, language, samples_per_class)
+        else:
+            _run_all_samples(classifier, df, results_df, processed_indices,
+                             ckpt_mgr, experiment_type, base_data_dir,
+                             batch_size, language)
+
+        # Final save
+        ckpt_mgr.save_checkpoint(results_df, processed_indices, len(df) - 1)
+
+        # Generate summary
+        summary = generate_summary_stats(results_df, language,
+                                         model_name.split('/')[-1],
+                                         experiment_type, samples_per_class)
+        summary_file = ckpt_mgr.output_dir / f"{language}_summary.json"
+        with open(summary_file, 'w', encoding='utf-8') as f:
+            json.dump(summary, f, indent=2, ensure_ascii=False)
+
+        print(f"\nCompleted {language}")
+        print(f"Results: {ckpt_mgr.results_file}")
+        print(f"Summary: {summary_file}")
+
+        if samples_per_class is None and len(processed_indices) == len(df):
+            ckpt_mgr.cleanup_checkpoint()
+
+
+# --------------- original (all-samples) loop ---------------
+
+def _run_all_samples(classifier, df, results_df, processed_indices,
+                     ckpt_mgr, experiment_type, base_data_dir,
+                     batch_size, language):
+    """Original loop: every sample gets all 6 classifications."""
+
+    if len(processed_indices) == len(df):
+        print(f"All samples for {language} already processed!")
+        return
+
+    unprocessed = [idx for idx in range(len(df)) if idx not in processed_indices]
+
+    pbar = tqdm(total=len(df), initial=len(processed_indices),
+                desc=f"{language} ({experiment_type})", unit="samples")
+
+    try:
+        for batch_start in range(0, len(unprocessed), batch_size):
+            batch_indices = unprocessed[batch_start:batch_start + batch_size]
+
+            batch_inputs = []
+            valid_indices = []
+            for idx in batch_indices:
+                row = df.iloc[idx]
+                input_data = _prepare_input(row, experiment_type, base_data_dir)
+                if input_data is not None:
+                    batch_inputs.append(input_data)
+                    valid_indices.append(idx)
+
+            if not batch_inputs:
+                pbar.update(len(batch_indices))
+                continue
+
+            if batch_start % (batch_size * 50) == 0 and torch.cuda.is_available():
+                mem_alloc = torch.cuda.memory_allocated() / 1024**3
+                mem_res = torch.cuda.memory_reserved() / 1024**3
+                print(f"\nGPU Memory: {mem_alloc:.1f}GB allocated, {mem_res:.1f}GB reserved")
+
+            for approach in APPROACHES:
+                for task in TASKS:
+                    results = classifier.classify_task_batch(batch_inputs, task, approach)
+                    for i, idx in enumerate(valid_indices):
+                        results_df.loc[idx, f'pred_{approach}_{task}'] = results[i]['value']
+                        results_df.loc[idx, f'pred_{approach}_{task}_raw'] = results[i]['raw_response']
+
+            processed_indices.update(valid_indices)
+            pbar.update(len(batch_indices))
+
+            ckpt_mgr.save_checkpoint(results_df, processed_indices, batch_indices[-1])
+
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
+    except KeyboardInterrupt:
+        print(f"\nInterrupted! Saving progress...")
+        ckpt_mgr.save_checkpoint(results_df, processed_indices,
+                                 batch_indices[-1] if 'batch_indices' in locals() else 0)
+        print("Progress saved. Resume by running the script again.")
+        return
+
+    finally:
+        pbar.close()
+
+    print(f"  {language}: {len(processed_indices)}/{len(df)} samples processed")
+
+
+# --------------- stratified-sampling loop ---------------
+
+def _run_stratified(classifier, df, results_df, processed_indices,
+                    ckpt_mgr, experiment_type, base_data_dir,
+                    batch_size, language, samples_per_class):
+    """Task-first loop: each task gets its own stratified subset."""
+
+    for task in TASKS:
+        target_indices = stratified_sample_indices(df, task, samples_per_class)
+        done = check_task_completed(results_df, target_indices, task)
+        remaining = [idx for idx in target_indices if idx not in done]
+
+        print(f"\n  Task '{task}': {len(target_indices)} target samples, "
+              f"{len(done)} already done, {len(remaining)} to process")
+
+        if not remaining:
             continue
 
-        # Collect unprocessed indices
-        unprocessed = [idx for idx in range(len(df)) if idx not in processed_indices]
-
-        pbar = tqdm(total=len(df), initial=len(processed_indices),
-                    desc=f"{language} ({experiment_type})", unit="samples")
+        pbar = tqdm(total=len(target_indices), initial=len(done),
+                    desc=f"{language}/{task}", unit="samples")
 
         try:
-            for batch_start in range(0, len(unprocessed), batch_size):
-                batch_indices = unprocessed[batch_start:batch_start + batch_size]
+            for batch_start in range(0, len(remaining), batch_size):
+                batch_indices = remaining[batch_start:batch_start + batch_size]
 
-                # Prepare batch inputs
                 batch_inputs = []
                 valid_indices = []
                 for idx in batch_indices:
@@ -650,28 +848,28 @@ def run_experiment(classifier: BaseClassifier, model_name: str,
                     pbar.update(len(batch_indices))
                     continue
 
-                # Print memory info periodically
                 if batch_start % (batch_size * 50) == 0 and torch.cuda.is_available():
                     mem_alloc = torch.cuda.memory_allocated() / 1024**3
                     mem_res = torch.cuda.memory_reserved() / 1024**3
                     print(f"\nGPU Memory: {mem_alloc:.1f}GB allocated, {mem_res:.1f}GB reserved")
 
-                # Run all 6 classifications for the batch
+                # Only run the current task (both approaches)
                 for approach in APPROACHES:
-                    for task in TASKS:
-                        results = classifier.classify_task_batch(batch_inputs, task, approach)
-                        for i, idx in enumerate(valid_indices):
-                            results_df.loc[idx, f'pred_{approach}_{task}'] = results[i]['value']
-                            results_df.loc[idx, f'pred_{approach}_{task}_raw'] = results[i]['raw_response']
+                    results = classifier.classify_task_batch(batch_inputs, task, approach)
+                    for i, idx in enumerate(valid_indices):
+                        results_df.loc[idx, f'pred_{approach}_{task}'] = results[i]['value']
+                        results_df.loc[idx, f'pred_{approach}_{task}_raw'] = results[i]['raw_response']
 
-                # Mark as processed
-                processed_indices.update(valid_indices)
+                # Track fully-processed samples (all 6 columns filled)
+                for idx in valid_indices:
+                    if all(_value_is_filled(results_df.loc[idx, f'pred_{a}_{t}'])
+                           for a in APPROACHES for t in TASKS):
+                        processed_indices.add(idx)
+
                 pbar.update(len(batch_indices))
 
-                # Save checkpoint after each batch
                 ckpt_mgr.save_checkpoint(results_df, processed_indices, batch_indices[-1])
 
-                # Memory cleanup between batches
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
 
@@ -685,26 +883,12 @@ def run_experiment(classifier: BaseClassifier, model_name: str,
         finally:
             pbar.close()
 
-        # Final save
-        ckpt_mgr.save_checkpoint(results_df, processed_indices, len(df) - 1)
-
-        # Generate summary
-        summary = generate_summary_stats(results_df, language,
-                                         model_name.split('/')[-1], experiment_type)
-        summary_file = ckpt_mgr.output_dir / f"{language}_summary.json"
-        with open(summary_file, 'w', encoding='utf-8') as f:
-            json.dump(summary, f, indent=2, ensure_ascii=False)
-
-        print(f"Completed {language}: {len(processed_indices)}/{len(df)} samples")
-        print(f"Results: {ckpt_mgr.results_file}")
-        print(f"Summary: {summary_file}")
-
-        if len(processed_indices) == len(df):
-            ckpt_mgr.cleanup_checkpoint()
+        print(f"  Task '{task}' complete for {language}")
 
 
 def generate_summary_stats(df: pd.DataFrame, language: str, model_name: str,
-                           experiment_type: str) -> Dict:
+                           experiment_type: str,
+                           samples_per_class: Optional[int] = None) -> Dict:
     summary = {
         'language': language,
         'model': model_name,
@@ -713,6 +897,18 @@ def generate_summary_stats(df: pd.DataFrame, language: str, model_name: str,
         'prompt_version': PROMPT_VERSION,
         'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
     }
+    if samples_per_class is not None:
+        summary['samples_per_class'] = samples_per_class
+        # Record per-task sample counts
+        per_task = {}
+        for task in TASKS:
+            indices = stratified_sample_indices(df, task, samples_per_class)
+            completed = check_task_completed(df, indices, task)
+            per_task[task] = {
+                'target_samples': len(indices),
+                'completed_samples': len(completed),
+            }
+        summary['stratified_sampling'] = per_task
     for approach in APPROACHES:
         binary_col = f'pred_{approach}_binary'
         if binary_col in df.columns:
@@ -798,10 +994,14 @@ def main_runner(classifier_class, model_name: str, args):
     """
     os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
 
+    samples_per_class = getattr(args, 'samples_per_class', None)
+
     print(f"Hallucination Classification Experiment")
     print(f"Model: {model_name}")
     print(f"Prompt version: v{PROMPT_VERSION}")
     print(f"Batch size: {args.batch_size}")
+    if samples_per_class is not None:
+        print(f"Stratified sampling: {samples_per_class} samples per class")
     print("=" * 60)
 
     valid_types = [t for t in args.experiment_types if t in EXPERIMENT_TYPES]
@@ -851,6 +1051,7 @@ def main_runner(classifier_class, model_name: str, args):
                 output_dir=args.output_dir,
                 checkpoint_dir=args.checkpoint_dir,
                 force_restart=args.force_restart,
+                samples_per_class=samples_per_class,
             )
         except Exception as e:
             print(f"Failed {experiment_type} experiment: {e}")
