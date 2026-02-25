@@ -1,0 +1,5 @@
+# Results analysis (no GPU / model dependencies needed)
+pandas
+numpy>=1.24
+scikit-learn
+tqdm

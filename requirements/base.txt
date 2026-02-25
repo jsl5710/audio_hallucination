@@ -1,0 +1,8 @@
+# Base dependencies shared across all model experiments
+torch>=2.0
+torchaudio>=2.0
+accelerate
+soundfile
+pandas
+tqdm
+numpy>=1.24

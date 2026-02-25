@@ -1,0 +1,5 @@
+# Qwen2.5-Omni-3B
+# Requires a special transformers preview branch for Qwen2.5-Omni support
+-r base.txt
+git+https://github.com/huggingface/transformers@v4.51.3-Qwen2.5-Omni-preview
+qwen-omni-utils[decord]

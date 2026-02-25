@@ -1,0 +1,5 @@
+# Gemma 3n E4B
+# Requires transformers >= 4.53.0 for Gemma3nForConditionalGeneration
+-r base.txt
+transformers>=4.53.0
+librosa

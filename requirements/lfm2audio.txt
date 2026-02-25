@@ -1,0 +1,3 @@
+# LFM2-Audio-1.5B (English only)
+-r base.txt
+liquid-audio
